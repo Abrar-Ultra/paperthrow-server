@@ -1,26 +1,50 @@
 /**
- * PaperThrow Firebase Functions (Spark-compatible version)
+ * PaperThrow Server (Render-compatible Express version)
  * Endpoints: /handshake, /sendEvent, /getResults, /getWind
+ * Author: Abrar Amin
  */
-const functions = require("firebase-functions");
+
+const express = require("express");
 const admin = require("firebase-admin");
 const crypto = require("crypto");
+const bodyParser = require("body-parser");
 
-if (!admin.apps.length) admin.initializeApp();
-const db = admin.firestore();
-
-// Helpers
-function json(res, code, obj) {
+const app = express();
+app.use(bodyParser.json());
+app.use((req, res, next) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "Content-Type");
-  res.status(code).send(JSON.stringify(obj));
+  next();
+});
+
+// ------------------- FIREBASE INIT -------------------
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    projectId: process.env.PROJECT_ID || serviceAccount.project_id,
+  });
+  console.log("✅ Firebase Admin initialized for", serviceAccount.project_id);
+} else {
+  console.warn("⚠️ GOOGLE_APPLICATION_CREDENTIALS_JSON not found. Firestore will fail.");
 }
-function bad(res, msg, code = 400) { json(res, code, { ok: false, error: msg }); }
+
+const db = admin.firestore();
+
+// ------------------- HELPERS -------------------
+function json(res, code, obj) {
+  res.status(code).json(obj);
+}
+function bad(res, msg, code = 400) {
+  json(res, code, { ok: false, error: msg });
+}
 function hmacSign(input) {
-  const secret = "dev_secret_spark_tier"; // static on Spark
+  const secret = "dev_secret_spark_tier"; // placeholder secret
   return crypto.createHmac("sha256", secret).update(input).digest("hex");
 }
-function newToken() { return crypto.randomBytes(16).toString("hex"); }
+function newToken() {
+  return crypto.randomBytes(16).toString("hex");
+}
 async function verifySession(sessionToken, sig) {
   if (!sessionToken || !sig) return null;
   const doc = await db.collection("sessions").doc(sessionToken).get();
@@ -29,9 +53,10 @@ async function verifySession(sessionToken, sig) {
   return doc.ref;
 }
 
+// ------------------- ENDPOINTS -------------------
+
 // Handshake
-exports.handshake = functions.https.onRequest(async (req, res) => {
-  if (req.method !== "POST") return bad(res, "POST required");
+app.post("/handshake", async (req, res) => {
   const { version, checksum, deviceId } = req.body || {};
   if (!version || !checksum || !deviceId) return bad(res, "Missing params");
 
@@ -53,8 +78,7 @@ exports.handshake = functions.https.onRequest(async (req, res) => {
 });
 
 // Send Event
-exports.sendEvent = functions.https.onRequest(async (req, res) => {
-  if (req.method !== "POST") return bad(res, "POST required");
+app.post("/sendEvent", async (req, res) => {
   const { sessionToken, clientSignature, eventType, timestamp, data } = req.body || {};
   const ref = await verifySession(sessionToken, clientSignature);
   if (!ref) return bad(res, "Invalid session", 401);
@@ -86,8 +110,7 @@ exports.sendEvent = functions.https.onRequest(async (req, res) => {
 });
 
 // Get Results
-exports.getResults = functions.https.onRequest(async (req, res) => {
-  if (req.method !== "POST") return bad(res, "POST required");
+app.post("/getResults", async (req, res) => {
   const { sessionToken, clientSignature } = req.body || {};
   const ref = await verifySession(sessionToken, clientSignature);
   if (!ref) return bad(res, "Invalid session", 401);
@@ -103,8 +126,7 @@ exports.getResults = functions.https.onRequest(async (req, res) => {
 });
 
 // Get Wind
-exports.getWind = functions.https.onRequest(async (req, res) => {
-  if (req.method !== "POST") return bad(res, "POST required");
+app.post("/getWind", async (req, res) => {
   const { sessionToken, clientSignature } = req.body || {};
   const ref = await verifySession(sessionToken, clientSignature);
   if (!ref) return bad(res, "Invalid session", 401);
@@ -121,3 +143,12 @@ exports.getWind = functions.https.onRequest(async (req, res) => {
   await ref.update({ lastWind: wind });
   json(res, 200, wind);
 });
+
+// Root
+app.get("/", (req, res) => {
+  res.send("🎯 PaperThrow backend is running!");
+});
+
+// ------------------- START SERVER -------------------
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
